@@ -89,8 +89,12 @@ export default function App() {
   const saveEmps = async e => { setEmps(e);     await sSet('rh:employees', e) }
   const saveCfg  = async c => { setCfg(c);      await sSet('rh:cfg', c) }
 
-  const handleEmpChange  = emp  => { setFEmp(emp);  if (emp && fType!=='disc') setFTime(nowTime()) }
-  const handleTypeChange = type => { setFType(type); if (fEmp && type!=='disc') setFTime(nowTime()); if(type==='disc') setFNoLunch(false) }
+  const loadNoLunch = (emp, day) => {
+    const stored = (weekData[emp] || {})[day] || {}
+    setFNoLunch(stored.noLunch || false)
+  }
+  const handleEmpChange  = emp  => { setFEmp(emp); if (emp && fType!=='disc') { setFTime(nowTime()); loadNoLunch(emp, fDay) } }
+  const handleTypeChange = type => { setFType(type); if (fEmp && type!=='disc') { setFTime(nowTime()); loadNoLunch(fEmp, fDay) } if(type==='disc') setFNoLunch(false) }
 
   const handleSave = () => {
     if (!fEmp) { toast('Selecciona un empleado','err'); return }
@@ -248,7 +252,7 @@ export default function App() {
                 </div>
                 <div>
                   <label style={lSt}>Día</label>
-                  <select value={fDay} onChange={e=>setFDay(e.target.value)} style={iSt}>
+                  <select value={fDay} onChange={e=>{ setFDay(e.target.value); if(fEmp) loadNoLunch(fEmp, e.target.value) }} style={iSt}>
                     {DAYS.map((d,i)=><option key={d} value={DKEYS[i]}>{d} {fmtD(addDays(monday,i))}</option>)}
                   </select>
                 </div>
@@ -464,4 +468,3 @@ export default function App() {
     </div>
   )
 }
-
