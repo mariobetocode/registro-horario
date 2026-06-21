@@ -23,6 +23,9 @@ const calcMin = (entry, exit, day='Mon', disc=0, noLunch=false) => {
   return Math.max(0, b - a - getLunch(day, noLunch) - disc)
 }
 const nowTime = () => { const n=new Date(); return `${String(n.getHours()).padStart(2,'0')}:${String(n.getMinutes()).padStart(2,'0')}` }
+const fmt12 = t => { if(!t) return ''; let [h,m]=t.split(':').map(Number); const ap=h>=12?'pm':'am'; h=h%12; if(h===0)h=12; return `${h}:${String(m).padStart(2,'0')} ${ap}` }
+const todayDKey = () => { const dy=new Date().getDay(); return dy===0?'Sat':DKEYS[dy-1] }
+const fmtDisc = mins => { if(!mins) return ''; const h=Math.floor(mins/60),m=mins%60; if(h&&m) return `${h}h ${m}m`; if(h) return `${h}h`; return `${m}m` }
 
 const C = {
   acc:'#1F4E79', accL:'#e8f0f8', accT:'#1F4E79',
@@ -45,10 +48,11 @@ export default function App() {
   const [syncing,  setSyncing]  = useState(false)
   const [offline,  setOffline]  = useState(!navigator.onLine)
   const [fEmp,      setFEmp]      = useState('')
-  const [fDay,      setFDay]      = useState('Mon')
+  const [fDay,      setFDay]      = useState(() => todayDKey())
   const [fType,     setFType]     = useState('entry')
   const [fTime,     setFTime]     = useState('')
-  const [fDiscMin,  setFDiscMin]  = useState('')
+  const [fDiscH,    setFDiscH]    = useState('')
+  const [fDiscM,    setFDiscM]    = useState('')
   const [fDiscNote, setFDiscNote] = useState('')
   const [fNoLunch,  setFNoLunch]  = useState(false)
   const [showAll,    setShowAll]    = useState(false)
@@ -60,6 +64,8 @@ export default function App() {
   const [cfgC,       setCfgC]       = useState(9)
   const [cfgM,       setCfgM]       = useState(5)
   const [tab,        setTab]        = useState('registro')
+  const [showWeekPicker, setShowWeekPicker] = useState(false)
+  const [cellDetail, setCellDetail] = useState(null)
 
   useEffect(() => {
     const on  = () => setOffline(false)
@@ -94,28 +100,34 @@ export default function App() {
     setFNoLunch(stored.noLunch || false)
   }
   const handleEmpChange  = emp  => { setFEmp(emp); if (emp && fType!=='disc') { setFTime(nowTime()); loadNoLunch(emp, fDay) } }
-  const handleTypeChange = type => { setFType(type); if (fEmp && type!=='disc') { setFTime(nowTime()); loadNoLunch(fEmp, fDay) } if(type==='disc') setFNoLunch(false) }
+  const handleTypeChange = type => { setFType(type); if (fEmp && type!=='disc') { setFTime(nowTime()); loadNoLunch(fEmp, fDay) } if(type==='disc'){ setFNoLunch(false); setFDiscH(''); setFDiscM(''); setFDiscNote('') } }
 
   const handleSave = () => {
     if (!fEmp) { toast('Selecciona un empleado','err'); return }
+    const existing = (weekData[fEmp] || {})[fDay] || {}
     const nd = JSON.parse(JSON.stringify(weekData))
     if (!nd[fEmp]) nd[fEmp] = {}
     if (!nd[fEmp][fDay]) nd[fEmp][fDay] = {}
     if (fType === 'entry' || fType === 'exit') {
       if (!fTime) { toast('Ingresa la hora','err'); return }
+      // CHANGE 4: confirm before overwriting an existing entry/exit
+      if (existing[fType]) {
+        const label = fType==='entry' ? 'entrada' : 'salida'
+        if (!confirm(`Ya existe una ${label} registrada (${fmt12(existing[fType])}) para ${fEmp} el ${DAYS[DKEYS.indexOf(fDay)]}.\n\n¿Reemplazarla por ${fmt12(fTime)}?`)) return
+      }
       nd[fEmp][fDay][fType] = fTime
       nd[fEmp][fDay].noLunch = fNoLunch
       setFTime('')
       setFNoLunch(false)
     } else {
-      const m = parseInt(fDiscMin) || 0
-      if (!m) { toast('Ingresa los minutos','err'); return }
-      nd[fEmp][fDay].discount = (nd[fEmp][fDay].discount||0) + m
+      const totalM = (parseInt(fDiscH)||0)*60 + (parseInt(fDiscM)||0)
+      if (!totalM) { toast('Ingresa el tiempo a descontar','err'); return }
+      nd[fEmp][fDay].discount = (nd[fEmp][fDay].discount||0) + totalM
       if (fDiscNote) {
         const ex = nd[fEmp][fDay].note || ''
         nd[fEmp][fDay].note = ex ? `${ex}; ${fDiscNote}` : fDiscNote
       }
-      setFDiscMin(''); setFDiscNote('')
+      setFDiscH(''); setFDiscM(''); setFDiscNote('')
     }
     saveWD(nd)
     toast(`✓ ${fEmp} · ${DAYS[DKEYS.indexOf(fDay)]} guardado`)
@@ -153,6 +165,9 @@ export default function App() {
   const visEmps     = showAll ? emps : emps.filter(e=>Object.values(weekData[e.name]||{}).some(r=>r.entry||r.exit))
   const activeCount = emps.filter(e=>calcWeekTot(e)!==null).length
   const grandTot    = emps.reduce((s,e)=>{const t=calcWeekTot(e);return t!==null?s+t:s},0)
+  const thisMonday  = getMon(new Date())
+  const isCurrentWeek = wKey(monday) === wKey(thisMonday)
+  const weeksFromNow  = Math.round((thisMonday - monday) / (7*24*60*60*1000))
 
   const buildReport = () => {
     const d0=fmtD(monday,{weekday:'long',day:'numeric',month:'long'})
@@ -169,8 +184,8 @@ export default function App() {
         if(!r.entry&&!r.exit) continue
         const m=calcMin(r.entry,r.exit,day,r.discount||0,r.noLunch||false)
         const lunchNote = r.noLunch ? ' [sin descanso]' : day==='Sat' ? ' [-15m desayuno]' : ' [-1h comida]'
-        let ln=`  ${DAYS[DKEYS.indexOf(day)]}: ${r.entry||'?'} → ${r.exit||'?'} (${fmtH(m)})${lunchNote}`
-        if(r.discount) ln+=` [-${r.discount}m${r.note?' '+r.note:''}]`
+        let ln=`  ${DAYS[DKEYS.indexOf(day)]}: ${r.entry?fmt12(r.entry):'?'} → ${r.exit?fmt12(r.exit):'?'} (${fmtH(m)})${lunchNote}`
+        if(r.discount) ln+=` [-${fmtDisc(r.discount)}${r.note?' '+r.note:''}]`
         lines.push(ln)
       }
     }
@@ -228,12 +243,24 @@ export default function App() {
 
       <div style={{background:C.sur,borderBottom:`1px solid ${C.brd}`,padding:'.75rem 1rem',display:'flex',alignItems:'center',gap:8}}>
         <button onClick={()=>changeWeek(-1)} style={{width:32,height:32,border:`1px solid ${C.brd}`,borderRadius:6,background:'transparent',cursor:'pointer',fontSize:16,color:C.tx2,flexShrink:0}}>←</button>
-        <div style={{flex:1,textAlign:'center'}}>
-          <div style={{fontWeight:600,fontSize:13.5}}>{fmtD(monday)} – {fmtD(addDays(monday,5))}</div>
-          <div style={{fontSize:10,color:C.tx3,fontFamily:'monospace',marginTop:1}}>{weekKey}</div>
+        <div style={{flex:1,textAlign:'center',position:'relative'}}>
+          <button onClick={()=>setShowWeekPicker(s=>!s)} style={{background:'none',border:'none',cursor:'pointer',padding:0,width:'100%'}}>
+            <div style={{fontWeight:600,fontSize:13.5,color:C.tx}}>{fmtD(monday)} – {fmtD(addDays(monday,5))} ▾</div>
+            <div style={{fontSize:10,color:C.tx3,marginTop:1}}>{isCurrentWeek?'Semana actual':weeksFromNow>0?`hace ${weeksFromNow} ${weeksFromNow===1?'semana':'semanas'}`:`en ${-weeksFromNow} ${-weeksFromNow===1?'semana':'semanas'}`}</div>
+          </button>
+          {showWeekPicker && (
+            <div style={{position:'absolute',top:'100%',left:'50%',transform:'translateX(-50%)',marginTop:8,background:'#fff',border:`1px solid ${C.brd}`,borderRadius:10,boxShadow:'0 8px 24px rgba(0,0,0,.15)',padding:'.75rem',zIndex:60,width:240}}>
+              <label style={{...lSt,marginBottom:6}}>Ir a la semana de:</label>
+              <input type="date" value={wKey(monday)} onChange={e=>{ if(e.target.value){ setMonday(getMon(new Date(e.target.value+'T12:00:00'))); setShowWeekPicker(false) } }} style={iSt} />
+              <div style={{display:'flex',gap:6,marginTop:8}}>
+                <button onClick={()=>{goToday();setShowWeekPicker(false)}} style={{flex:1,padding:'7px',fontSize:11,border:`1px solid ${C.brd}`,borderRadius:6,background:C.accL,color:C.acc,cursor:'pointer',fontWeight:500}}>Semana actual</button>
+                <button onClick={()=>setShowWeekPicker(false)} style={{flex:1,padding:'7px',fontSize:11,border:`1px solid ${C.brd}`,borderRadius:6,background:'transparent',color:C.tx2,cursor:'pointer'}}>Cerrar</button>
+              </div>
+            </div>
+          )}
         </div>
         <button onClick={()=>changeWeek(1)} style={{width:32,height:32,border:`1px solid ${C.brd}`,borderRadius:6,background:'transparent',cursor:'pointer',fontSize:16,color:C.tx2,flexShrink:0}}>→</button>
-        <button onClick={goToday} style={{padding:'5px 10px',border:`1px solid ${C.brd}`,borderRadius:6,background:'transparent',cursor:'pointer',fontSize:11,color:C.tx2,flexShrink:0}}>Hoy</button>
+        <button onClick={goToday} style={{padding:'5px 10px',border:`1px solid ${C.brd}`,borderRadius:6,background:isCurrentWeek?'transparent':C.accL,color:isCurrentWeek?C.tx2:C.acc,cursor:'pointer',fontSize:11,flexShrink:0,fontWeight:isCurrentWeek?400:600}}>Hoy</button>
       </div>
 
       <div style={{padding:'1rem',maxWidth:900,margin:'0 auto'}}>
@@ -276,12 +303,22 @@ export default function App() {
                 ):(
                   <>
                     <div>
-                      <label style={lSt}>Minutos a descontar</label>
-                      <input type="number" min="1" max="480" placeholder="ej. 30" value={fDiscMin} onChange={e=>setFDiscMin(e.target.value)} style={iSt} />
+                      <label style={lSt}>Tiempo a descontar</label>
+                      <div style={{display:'flex',gap:8,alignItems:'flex-end'}}>
+                        <div style={{flex:1}}>
+                          <input type="number" min="0" max="12" placeholder="0" value={fDiscH} onChange={e=>setFDiscH(e.target.value)} style={{...iSt,fontSize:18,fontFamily:'monospace',textAlign:'center'}} />
+                          <div style={{fontSize:10,color:C.tx3,textAlign:'center',marginTop:2}}>horas</div>
+                        </div>
+                        <div style={{fontSize:20,color:C.tx3,paddingBottom:18}}>:</div>
+                        <div style={{flex:1}}>
+                          <input type="number" min="0" max="59" placeholder="00" value={fDiscM} onChange={e=>setFDiscM(e.target.value)} style={{...iSt,fontSize:18,fontFamily:'monospace',textAlign:'center'}} />
+                          <div style={{fontSize:10,color:C.tx3,textAlign:'center',marginTop:2}}>minutos</div>
+                        </div>
+                      </div>
                     </div>
                     <div>
                       <label style={lSt}>Motivo (opcional)</label>
-                      <input type="text" placeholder="ej. composturas…" value={fDiscNote} onChange={e=>setFDiscNote(e.target.value)} style={iSt} />
+                      <input type="text" placeholder="ej. composturas, salida temprano…" value={fDiscNote} onChange={e=>setFDiscNote(e.target.value)} style={iSt} />
                     </div>
                   </>
                 )}
@@ -333,15 +370,14 @@ export default function App() {
                           const status=hasData?cellStatus(m,jorMin):'empty'
                           const bg=statusBg(status,di===5)||(ei%2===0?'#fff':'#fafaf9')
                           return(
-                            <td key={day} style={{padding:'5px 3px',borderBottom:`1px solid ${C.brd}`,borderRight:`1px solid ${C.brd}`,textAlign:'center',background:bg,verticalAlign:'top'}}>
+                            <td key={day} onClick={()=>hasData&&setCellDetail({emp:emp.name,day,r,m})} style={{padding:'5px 3px',borderBottom:`1px solid ${C.brd}`,borderRight:`1px solid ${C.brd}`,textAlign:'center',background:bg,verticalAlign:'top',cursor:hasData?'pointer':'default'}}>
                               {hasData?(
                                 <div style={{lineHeight:1.7}}>
-                                  {r.entry&&<div style={{color:C.acc,fontFamily:'monospace',fontSize:11}}>→ {r.entry}</div>}
-                                  {r.exit &&<div style={{color:C.tx2,fontFamily:'monospace',fontSize:11}}>← {r.exit}</div>}
+                                  {r.entry&&<div style={{color:C.acc,fontFamily:'monospace',fontSize:10.5}}>→ {fmt12(r.entry)}</div>}
+                                  {r.exit &&<div style={{color:C.tx2,fontFamily:'monospace',fontSize:10.5}}>← {fmt12(r.exit)}</div>}
                                   {m!==null&&<div style={{fontWeight:700,fontSize:11,color:statusColor(status)}}>{fmtH(m)}</div>}
                                   {r.noLunch&&<div style={{fontSize:9,color:C.ylw,background:C.ylwL,borderRadius:3,padding:'1px 4px',display:'inline-block'}}>sin comida</div>}
-                                  {r.discount>0&&<div style={{fontSize:9,color:C.ylw,background:C.ylwL,borderRadius:3,padding:'1px 4px',display:'inline-block',marginTop:1}}>-{r.discount}m</div>}
-                                  <button onClick={()=>clearDay(emp.name,day)} style={{display:'block',margin:'1px auto 0',fontSize:9,color:C.red,background:'none',border:'none',cursor:'pointer',padding:'1px 3px',opacity:.6}}>✕</button>
+                                  {r.discount>0&&<div style={{fontSize:9,color:C.ylw,background:C.ylwL,borderRadius:3,padding:'1px 4px',display:'inline-block',marginTop:1}}>-{fmtDisc(r.discount)}{r.note?' ⓘ':''}</div>}
                                 </div>
                               ):<span style={{color:C.tx3}}>—</span>}
                             </td>
@@ -356,7 +392,7 @@ export default function App() {
                 </tbody>
               </table>
             </div>
-            <p style={{fontSize:10,color:C.tx3,marginTop:6}}>* Lun–Vie: -1h comida · Sáb: -15min desayuno · 🟡 menos de jornada · 🔴 sin horas</p>
+            <p style={{fontSize:10,color:C.tx3,marginTop:6}}>* Toca una casilla para ver el detalle · Lun–Vie: -1h comida · Sáb: -15min · 🟡 menos de jornada · 🔴 sin horas</p>
 
             <button onClick={()=>setShowReport(true)} style={{width:'100%',marginTop:12,padding:'12px',background:C.grn,color:'#fff',border:'none',borderRadius:8,fontFamily:'inherit',fontSize:14,fontWeight:600,cursor:'pointer'}}>
               📄 Generar reporte semanal
@@ -444,6 +480,53 @@ export default function App() {
           </button>
         ))}
       </div>
+
+      {cellDetail&&(() => {
+        const di = DKEYS.indexOf(cellDetail.day)
+        const r = cellDetail.r
+        const lunchTxt = r.noLunch ? 'Sin descanso (no se descontó comida)' : cellDetail.day==='Sat' ? '-15 min (desayuno)' : '-1 h (comida)'
+        return (
+          <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.5)',zIndex:500,display:'flex',alignItems:'center',justifyContent:'center',padding:'1rem'}} onClick={e=>e.target===e.currentTarget&&setCellDetail(null)}>
+            <div style={{background:'#fff',borderRadius:14,width:'100%',maxWidth:340,overflow:'hidden'}}>
+              <div style={{padding:'1rem 1.25rem',borderBottom:`1px solid ${C.brd}`,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <div>
+                  <b style={{fontSize:15}}>{cellDetail.emp}</b>
+                  <div style={{fontSize:11,color:C.tx2,marginTop:1}}>{DAYS[di]} {fmtD(addDays(monday,di))}</div>
+                </div>
+                <button onClick={()=>setCellDetail(null)} style={{background:'none',border:'none',fontSize:22,cursor:'pointer',color:C.tx3,lineHeight:1}}>×</button>
+              </div>
+              <div style={{padding:'1.25rem',display:'flex',flexDirection:'column',gap:10}}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:13}}>
+                  <span style={{color:C.tx2}}>Entrada</span>
+                  <b style={{fontFamily:'monospace',color:C.acc}}>{r.entry?fmt12(r.entry):'\u2014'}</b>
+                </div>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:13}}>
+                  <span style={{color:C.tx2}}>Salida</span>
+                  <b style={{fontFamily:'monospace',color:C.acc}}>{r.exit?fmt12(r.exit):'\u2014'}</b>
+                </div>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:13}}>
+                  <span style={{color:C.tx2}}>Descanso</span>
+                  <span style={{color:C.tx,fontSize:12}}>{lunchTxt}</span>
+                </div>
+                {r.discount>0 && (
+                  <div style={{background:C.ylwL,borderRadius:8,padding:'10px 12px'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',fontSize:13}}>
+                      <span style={{color:C.ylw,fontWeight:600}}>Descuento aplicado</span>
+                      <b style={{color:C.ylw}}>-{fmtDisc(r.discount)}</b>
+                    </div>
+                    {r.note && <div style={{fontSize:12,color:C.ylw,marginTop:6,lineHeight:1.5}}>📝 {r.note}</div>}
+                  </div>
+                )}
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:14,borderTop:`1px solid ${C.brd}`,paddingTop:10,marginTop:2}}>
+                  <span style={{fontWeight:600}}>Total del d\u00eda</span>
+                  <b style={{color:C.grn,fontSize:16}}>{fmtH(cellDetail.m)}</b>
+                </div>
+                <button onClick={()=>{clearDay(cellDetail.emp,cellDetail.day);setCellDetail(null)}} style={{marginTop:6,padding:'9px',background:C.redL,color:C.red,border:`1px solid #f5c6c6`,borderRadius:6,fontFamily:'inherit',fontSize:12,fontWeight:600,cursor:'pointer'}}>🗑️ Borrar registro de este día</button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {showReport&&(
         <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.5)',zIndex:500,display:'flex',alignItems:'flex-end',justifyContent:'center'}} onClick={e=>e.target===e.currentTarget&&setShowReport(false)}>
