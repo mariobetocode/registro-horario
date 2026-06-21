@@ -35,7 +35,7 @@ const C = {
   brd:'#e0dbd5', bg:'#f7f6f3', sur:'#ffffff',
   sat:'#f5f0ea', tx:'#1a1916', tx2:'#6b6760', tx3:'#a09d99',
 }
-const iSt = { width:'100%', padding:'8px 10px', border:`1px solid ${C.brd}`, borderRadius:6, fontFamily:'inherit', fontSize:13, background:'#fff', color:C.tx, outline:'none' }
+const iSt = { width:'100%', padding:'8px 10px', border:`1px solid ${C.brd}`, borderRadius:6, fontFamily:'inherit', fontSize:13, background:'#fff', color:C.tx, outline:'none', boxSizing:'border-box' }
 const lSt = { display:'block', fontSize:10, fontWeight:600, color:C.tx2, marginBottom:4, textTransform:'uppercase', letterSpacing:'.5px' }
 
 export default function App() {
@@ -75,17 +75,24 @@ export default function App() {
     return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off) }
   }, [])
 
+  // Datos globales: se cargan una sola vez al iniciar
   useEffect(() => {
     ;(async () => {
-      setLoading(true)
       const e = await sGet('rh:employees')
       setEmps(e || DEFAULT_EMPS)
       const c = await sGet('rh:cfg')
       if (c) { setCfg(c); setCfgC(Math.round(c.completaMin/60)); setCfgM(Math.round(c.mediaMin/60)) }
-      const w = await sGet(`rh:week:${weekKey}`)
-      setWeekData(w || {})
       const em = await sGet('rh:bossEmail')
       if (em) setBossEmail(em)
+    })()
+  }, [])
+
+  // Datos de la semana: se recargan al cambiar de semana
+  useEffect(() => {
+    ;(async () => {
+      setLoading(true)
+      const w = await sGet(`rh:week:${weekKey}`)
+      setWeekData(w || {})
       setLoading(false)
     })()
   }, [weekKey])
@@ -227,6 +234,7 @@ export default function App() {
 
   return (
     <div style={{fontFamily:"system-ui,sans-serif",background:C.bg,minHeight:'100vh',fontSize:14,color:C.tx,paddingBottom:72}}>
+      <style>{`* { box-sizing: border-box; } input, select, button { font-family: inherit; } input[type="date"] { -webkit-appearance: none; appearance: none; }`}</style>
       <div style={{background:C.acc,color:'#fff',padding:'0 1rem',height:52,display:'flex',alignItems:'center',justifyContent:'space-between',position:'sticky',top:0,zIndex:50,boxShadow:'0 2px 10px rgba(0,0,0,.2)'}}>
         <b style={{fontSize:15}}>📋 Registro de Horarios</b>
         <div style={{display:'flex',alignItems:'center',gap:8}}>
@@ -498,11 +506,11 @@ export default function App() {
               <div style={{padding:'1.25rem',display:'flex',flexDirection:'column',gap:10}}>
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:13}}>
                   <span style={{color:C.tx2}}>Entrada</span>
-                  <b style={{fontFamily:'monospace',color:C.acc}}>{r.entry?fmt12(r.entry):'\u2014'}</b>
+                  <b style={{fontFamily:'monospace',color:C.acc}}>{r.entry?fmt12(r.entry):'—'}</b>
                 </div>
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:13}}>
                   <span style={{color:C.tx2}}>Salida</span>
-                  <b style={{fontFamily:'monospace',color:C.acc}}>{r.exit?fmt12(r.exit):'\u2014'}</b>
+                  <b style={{fontFamily:'monospace',color:C.acc}}>{r.exit?fmt12(r.exit):'—'}</b>
                 </div>
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:13}}>
                   <span style={{color:C.tx2}}>Descanso</span>
@@ -518,7 +526,7 @@ export default function App() {
                   </div>
                 )}
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:14,borderTop:`1px solid ${C.brd}`,paddingTop:10,marginTop:2}}>
-                  <span style={{fontWeight:600}}>Total del d\u00eda</span>
+                  <span style={{fontWeight:600}}>Total del día</span>
                   <b style={{color:C.grn,fontSize:16}}>{fmtH(cellDetail.m)}</b>
                 </div>
                 <button onClick={()=>{clearDay(cellDetail.emp,cellDetail.day);setCellDetail(null)}} style={{marginTop:6,padding:'9px',background:C.redL,color:C.red,border:`1px solid #f5c6c6`,borderRadius:6,fontFamily:'inherit',fontSize:12,fontWeight:600,cursor:'pointer'}}>🗑️ Borrar registro de este día</button>
