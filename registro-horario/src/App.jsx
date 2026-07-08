@@ -1,5 +1,11 @@
 import { useState, useEffect, useMemo } from 'react'
-import { sGet, sSet } from './supabase.js'
+import { sGet, sSet, supabase } from './supabase.js'
+
+// Normaliza nombres para cruzar saldos de la tiendita con empleados
+// ignorando acentos, mayúsculas y espacios sobrantes.
+const normName = s => (s || '')
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .trim().toLowerCase()
 
 const DAYS  = ['Lun','Mar','Mié','Jue','Vie','Sáb']
 const DKEYS = ['Mon','Tue','Wed','Thu','Fri','Sat']
@@ -66,6 +72,7 @@ export default function App() {
   const [tab,        setTab]        = useState('registro')
   const [showWeekPicker, setShowWeekPicker] = useState(false)
   const [cellDetail, setCellDetail] = useState(null)
+  const [saldosTienda, setSaldosTienda] = useState({}) // { nombreNormalizado: saldo }
 
   useEffect(() => {
     const on  = () => setOffline(false)
@@ -84,8 +91,29 @@ export default function App() {
       if (c) { setCfg(c); setCfgC(Math.round(c.completaMin/60)); setCfgM(Math.round(c.mediaMin/60)) }
       const em = await sGet('rh:bossEmail')
       if (em) setBossEmail(em)
+      await loadSaldosTienda()
     })()
   }, [])
+
+  // Saldos pendientes de la tiendita (vista tienda_saldos_pendientes en la
+  // misma base). Solo informativo: no altera el cálculo de horas ni nómina.
+  const loadSaldosTienda = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('tienda_saldos_pendientes')
+        .select('trabajador,saldo')
+      if (error) throw error
+      const map = {}
+      ;(data || []).forEach(r => { map[normName(r.trabajador)] = Number(r.saldo) })
+      setSaldosTienda(map)
+    } catch (e) {
+      console.warn('No se pudieron leer saldos de la tiendita:', e)
+      setSaldosTienda({})
+    }
+  }
+
+  const saldoDe = name => saldosTienda[normName(name)] || 0
+  const fmtMXN = n => new Intl.NumberFormat('es-MX', { style:'currency', currency:'MXN' }).format(n || 0)
 
   // Datos de la semana: se recargan al cambiar de semana
   useEffect(() => {
@@ -183,6 +211,7 @@ export default function App() {
     const lines=['REPORTE SEMANAL DE HORAS',`Semana: ${d0} al ${d1}`,sep,
       `${'EMPLEADO'.padEnd(18)} ${'JORNADA'.padEnd(12)} ${'HORAS'.padStart(6)}`,sep]
     let grand=0
+    let grandSaldo=0
     for(const emp of emps){
       const t=calcWeekTot(emp); if(t===null) continue; grand+=t
       lines.push(`${emp.name.padEnd(18)} ${(emp.jornada==='media'?'Media':'Completa').padEnd(12)} ${fmtH(t).padStart(6)}`)
@@ -195,8 +224,11 @@ export default function App() {
         if(r.discount) ln+=` [-${fmtDisc(r.discount)}${r.note?' '+r.note:''}]`
         lines.push(ln)
       }
+      const sal=saldoDe(emp.name)
+      if(sal>0){ grandSaldo+=sal; lines.push(`  🛒 Saldo tiendita: ${fmtMXN(sal)}`) }
     }
     lines.push(sep,`${'TOTAL GENERAL'.padEnd(18)} ${''.padEnd(12)} ${fmtH(grand).padStart(6)}`,sep)
+    if(grandSaldo>0) lines.push(`🛒 Saldos tiendita por descontar: ${fmtMXN(grandSaldo)}`,sep)
     lines.push(`Generado: ${new Date().toLocaleDateString('es-MX',{day:'numeric',month:'long',year:'numeric',hour:'2-digit',minute:'2-digit'})}`)
     return lines.join('\n')
   }
@@ -370,6 +402,7 @@ export default function App() {
                         <td style={{padding:'6px 8px',borderBottom:`1px solid ${C.brd}`,borderRight:`1px solid ${C.brd}`,fontWeight:500,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:110}}>
                           {emp.name}
                           <div style={{fontSize:9,color:emp.jornada==='media'?C.ylw:C.tx3,fontWeight:400,marginTop:1}}>{emp.jornada==='media'?'Media':'Completa'}</div>
+                          {saldoDe(emp.name)>0&&<div title="Saldo pendiente en la tiendita" style={{fontSize:9,fontWeight:700,color:C.ylw,background:C.ylwL,borderRadius:3,padding:'1px 4px',display:'inline-block',marginTop:2}}>🛒 {fmtMXN(saldoDe(emp.name))}</div>}
                         </td>
                         {DKEYS.map((day,di)=>{
                           const r=(weekData[emp.name]||{})[day]||{}
@@ -400,7 +433,11 @@ export default function App() {
                 </tbody>
               </table>
             </div>
-            <p style={{fontSize:10,color:C.tx3,marginTop:6}}>* Toca una casilla para ver el detalle · Lun–Vie: -1h comida · Sáb: -15min · 🟡 menos de jornada · 🔴 sin horas</p>
+            <p style={{fontSize:10,color:C.tx3,marginTop:6}}>* Toca una casilla para ver el detalle · Lun–Vie: -1h comida · Sáb: -15min · 🟡 menos de jornada · 🔴 sin horas · 🛒 saldo pendiente en la tiendita</p>
+
+            <button onClick={loadSaldosTienda} style={{width:'100%',marginTop:8,padding:'8px',background:'#fff',color:C.tx2,border:`1px solid ${C.brd}`,borderRadius:8,fontFamily:'inherit',fontSize:12,fontWeight:500,cursor:'pointer'}}>
+              🔄 Actualizar saldos de la tiendita
+            </button>
 
             <button onClick={()=>setShowReport(true)} style={{width:'100%',marginTop:12,padding:'12px',background:C.grn,color:'#fff',border:'none',borderRadius:8,fontFamily:'inherit',fontSize:14,fontWeight:600,cursor:'pointer'}}>
               📄 Generar reporte semanal
