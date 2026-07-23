@@ -26,6 +26,17 @@ const DKEYS = ['Mon','Tue','Wed','Thu','Fri','Sat']
 
 const normName = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim()
 
+// ── Normaliza números de teléfono ──
+// WhatsApp entrega los celulares de México como 52 + 1 + 10 dígitos (ej. 5217713199870),
+// pero la API SOLO acepta enviar a 52 + 10 dígitos (ej. 527713199870).
+// Esta función deja ambos en el mismo formato canónico (sin el 1 extra).
+function normPhone(num) {
+  let n = String(num || '').replace(/\D/g, '')          // solo dígitos
+  if (n.startsWith('521') && n.length === 13) n = '52' + n.slice(3)   // México: quita el 1
+  if (n.startsWith('549') && n.length === 13) n = '54' + n.slice(3)   // Argentina: mismo caso
+  return n
+}
+
 function parseHora(txt) {
   if (!txt) return null
   let t = txt.toLowerCase().replace(/\s+/g,'').trim()
@@ -276,13 +287,13 @@ export default async function handler(req, res) {
       const texto = msg.text.body
 
       // ── Seguridad: solo tu número puede registrar ──
-      if (ALLOWED_NUMBER && from !== ALLOWED_NUMBER) {
-        await enviarWhatsApp(from, '🔒 Este bot es privado y no está autorizado para tu número.')
+      if (ALLOWED_NUMBER && normPhone(from) !== normPhone(ALLOWED_NUMBER)) {
+        console.log('Número no autorizado:', from, '(normalizado:', normPhone(from), ') vs permitido:', normPhone(ALLOWED_NUMBER))
         return res.status(200).json({ ok: true })
       }
 
       const { reply } = await procesarMensaje(texto)
-      await enviarWhatsApp(from, reply)   // confirmación siempre (como pediste)
+      await enviarWhatsApp(normPhone(from), reply)   // confirmación siempre (número normalizado)
 
       return res.status(200).json({ ok: true })
     } catch (e) {
