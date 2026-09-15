@@ -82,6 +82,19 @@ export default function App() {
     return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off) }
   }, [])
 
+  // Al volver a esta pestaña/PWA después de un rato (p. ej. minimizada
+  // mientras registrabas por WhatsApp), se refrescan los datos de la
+  // semana actual para no mostrar/editar información desactualizada.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        sGet(`rh:week:${weekKey}`).then(w => setWeekData(w || {}))
+      }
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [weekKey])
+
   // Datos globales: se cargan una sola vez al iniciar
   useEffect(() => {
     ;(async () => {
@@ -137,10 +150,13 @@ export default function App() {
   const handleEmpChange  = emp  => { setFEmp(emp); if (emp && fType!=='disc') { setFTime(nowTime()); loadNoLunch(emp, fDay) } }
   const handleTypeChange = type => { setFType(type); if (fEmp && type!=='disc') { setFTime(nowTime()); loadNoLunch(fEmp, fDay) } if(type==='disc'){ setFNoLunch(false); setFDiscH(''); setFDiscM(''); setFDiscNote('') } }
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!fEmp) { toast('Selecciona un empleado','err'); return }
-    const existing = (weekData[fEmp] || {})[fDay] || {}
-    const nd = JSON.parse(JSON.stringify(weekData))
+    // Siempre se lee lo último de la base antes de guardar — evita que un
+    // registro hecho por WhatsApp u otro dispositivo mientras esta pestaña
+    // estaba abierta se pierda al sobrescribir con datos viejos en memoria.
+    const nd = (await sGet(`rh:week:${weekKey}`)) || {}
+    const existing = (nd[fEmp] || {})[fDay] || {}
     if (!nd[fEmp]) nd[fEmp] = {}
     if (!nd[fEmp][fDay]) nd[fEmp][fDay] = {}
     if (fType === 'entry' || fType === 'exit') {
@@ -168,23 +184,31 @@ export default function App() {
     toast(`✓ ${fEmp} · ${DAYS[DKEYS.indexOf(fDay)]} guardado`)
   }
 
-  const clearDay = (name, day) => {
-    const nd = JSON.parse(JSON.stringify(weekData))
+  const clearDay = async (name, day) => {
+    const nd = (await sGet(`rh:week:${weekKey}`)) || {}
     if (nd[name]) delete nd[name][day]
     saveWD(nd)
     toast('Registro eliminado')
   }
 
-  const addEmp = () => {
+  const addEmp = async () => {
     const n = newName.trim()
     if (!n) return
-    if (emps.find(e => e.name===n)) { toast('Empleado ya existe','err'); return }
-    const ne = [...emps, {name:n, jornada:newJornada}].sort((a,b)=>a.name.localeCompare(b.name))
+    const actuales = (await sGet('rh:employees')) || emps
+    if (actuales.find(e => e.name===n)) { toast('Empleado ya existe','err'); return }
+    const ne = [...actuales, {name:n, jornada:newJornada}].sort((a,b)=>a.name.localeCompare(b.name))
     saveEmps(ne); setNewName('')
     toast(`${n} agregado`)
   }
-  const removeEmp     = name => { if(!confirm(`¿Eliminar a ${name}?`)) return; saveEmps(emps.filter(e=>e.name!==name)) }
-  const updateJornada = (name,j) => saveEmps(emps.map(e=>e.name===name?{...e,jornada:j}:e))
+  const removeEmp     = async name => {
+    if(!confirm(`¿Eliminar a ${name}?`)) return
+    const actuales = (await sGet('rh:employees')) || emps
+    saveEmps(actuales.filter(e=>e.name!==name))
+  }
+  const updateJornada = async (name,j) => {
+    const actuales = (await sGet('rh:employees')) || emps
+    saveEmps(actuales.map(e=>e.name===name?{...e,jornada:j}:e))
+  }
   const applyCfg      = () => { const c={completaMin:cfgC*60,mediaMin:cfgM*60}; saveCfg(c); toast('Configuración guardada') }
 
   const changeWeek = n => setMonday(prev => addDays(prev, n*7))
