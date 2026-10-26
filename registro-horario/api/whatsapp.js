@@ -141,7 +141,7 @@ async function procesarMensaje(texto) {
 
   // ── Comandos ──
   if (normName(limpio) === 'ayuda' || limpio === '?') {
-    return { reply: '📋 *Cómo registrar:*\n\n• Nombre solo: `Mario` (hora actual)\n• Con hora: `Mario 8:00 am`\n\n• 1er mensaje del día = ENTRADA\n• 2do mensaje del día = SALIDA\n\n*Corregir:*\n• `corregir Mario` — borra su día\n• `corregir Mario 8:10` — cambia entrada\n• `corregir Mario salida 6pm` — cambia salida\n\n_Otros:_ `lista`, `hoy`' }
+    return { reply: '📋 *Cómo registrar:*\n\n• Nombre solo: `Mario` (hora actual)\n• Con hora: `Mario 8:00 am`\n\n• 1er registro del día = ENTRADA\n• 2do registro del día = SALIDA\n\n*Varios de una vez* (recomendado):\n• `catalina 6pm, fermin 6pm, rosa 6pm`\n• `6pm: catalina, fermin, rosa`\n  _(la hora del inicio aplica a todos)_\n\nTambién sirve uno por renglón. Un solo mensaje de respuesta para todo el lote.\n\n*Corregir:*\n• `corregir Mario` — borra su día\n• `corregir Mario 8:10` — cambia entrada\n• `corregir Mario salida 6pm` — cambia salida\n\n_Otros:_ `lista`, `hoy`' }
   }
   if (normName(limpio) === 'lista') {
     if (empleados.length === 0) return { reply: '⚠️ No hay empleados cargados en la app todavía.' }
@@ -164,7 +164,54 @@ async function procesarMensaje(texto) {
     return { reply: '📅 *Registros de hoy:*\n\n' + lineas.join('\n') }
   }
 
-  // ── Comando CORREGIR ──
+  // ── Registros múltiples en un solo mensaje ──
+  // "catalina 6pm, fermin 6pm" se separa por coma, punto y coma o salto de línea.
+  // Prefijo de hora compartida: "6pm: catalina, fermin" aplica esa hora a todos
+  // los que no traigan la suya.
+  let horaComun = null
+  let cuerpo = limpio
+  const pref = limpio.match(/^(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*:\s*([\s\S]+)$/i)
+  if (pref && /[a-záéíóúñ]/i.test(pref[2])) {
+    const h = parseHora(pref[1])
+    if (h) { horaComun = h; cuerpo = pref[2].trim() }
+  }
+
+  const partes = cuerpo.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean)
+  if (partes.length === 0) return { reply: '⚠️ Mensaje vacío. Escribe `ayuda` para ver cómo usarme.' }
+  if (partes.length > 40) return { reply: '⚠️ Demasiados registros en un mensaje (máximo 40). Mándalo en dos partes.' }
+
+  // La semana se lee UNA vez y se guarda UNA vez, traiga el mensaje uno o veinte
+  // registros: así un solo mensaje de respuesta cubre todo el lote.
+  const week = await sGet(weekKey) || {}
+  const resultados = partes.map(parte =>
+    procesarItem(parte, { week, dkey, empleados, horaActual, horaComun })
+  )
+  const guardados = resultados.filter(r => r.changed).length
+  if (guardados > 0) await sSet(weekKey, week)
+
+  // Un solo registro → respuesta detallada de siempre
+  if (resultados.length === 1) return { reply: resultados[0].detail }
+
+  // Varios → un único resumen (1 mensaje de servicio en vez de N)
+  const fallos = resultados.length - guardados
+  const enc = fallos === 0
+    ? `✅ ${guardados} registro${guardados === 1 ? '' : 's'} guardado${guardados === 1 ? '' : 's'}`
+    : `✅ ${guardados} guardado${guardados === 1 ? '' : 's'} · ⚠️ ${fallos} sin registrar`
+  return { reply: enc + '\n\n' + resultados.map(r => r.line).join('\n') }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// UN REGISTRO INDIVIDUAL, aplicado sobre el objeto `week` que ya está en memoria.
+// No lee ni escribe en Supabase: de eso se encarga procesarMensaje una sola vez.
+// Devuelve { changed, line (compacta, para lotes), detail (completa, para 1 solo) }
+// ═══════════════════════════════════════════════════════════════════════════
+
+function procesarItem(texto, ctx) {
+  const { week, dkey, empleados, horaActual, horaComun } = ctx
+  const limpio = (texto || '').trim()
+  const nada = (line, detail) => ({ changed: false, line, detail: detail || line })
+
+  // ── corregir <nombre> [entrada|salida] [hora] ──
   const corrMatch = limpio.match(/^corregir\s+(.+)$/i)
   if (corrMatch) {
     const resto = corrMatch[1].trim()
@@ -174,37 +221,38 @@ async function procesarMensaje(texto) {
     else { nombreCorr = resto }
 
     const { match: empC, ambiguous: ambC, options: optC } = matchEmpleado(nombreCorr, empleados)
-    if (ambC) return { reply: `🤔 Varios coinciden con "${nombreCorr}": ${optC.join(', ')}. Usa el nombre completo.` }
-    if (!empC) return { reply: `❌ No encontré a "${nombreCorr}" para corregir.` }
+    if (ambC) return nada(`🤔 "${nombreCorr}" — varios: ${optC.join(', ')}`)
+    if (!empC) return nada(`❌ "${nombreCorr}" — no está en la lista`)
 
-    const week = await sGet(weekKey) || {}
     const regActual = (week[empC] || {})[dkey]
     if (!regActual || (!regActual.entry && !regActual.exit)) {
-      return { reply: `ℹ️ *${empC}* no tiene registros hoy.\nEscribe \`${empC}\` para registrar su entrada.` }
+      return nada(`ℹ️ ${empC} — sin registros hoy`,
+        `ℹ️ *${empC}* no tiene registros hoy.\nEscribe \`${empC}\` para registrar su entrada.`)
     }
 
     // Sin hora → borra el día
     if (!horaCorrTxt) {
-      if (week[empC]) delete week[empC][dkey]
-      await sSet(weekKey, week)
-      return { reply: `🗑️ *${empC}* — registros de hoy borrados.\nEscribe \`${empC}\` para volver a registrar.` }
+      delete week[empC][dkey]
+      return { changed: true,
+        line: `🗑️ ${empC} — día borrado`,
+        detail: `🗑️ *${empC}* — registros de hoy borrados.\nEscribe \`${empC}\` para volver a registrar.` }
     }
 
     const horaCorr = parseHora(horaCorrTxt)
-    if (!horaCorr) return { reply: `⚠️ No entendí la hora "${horaCorrTxt}".` }
+    if (!horaCorr) return nada(`⚠️ ${empC} — hora "${horaCorrTxt}" no entendida`)
     if (!tipoCorr) tipoCorr = 'entrada'
     const tipoKey = tipoCorr === 'salida' ? 'exit' : 'entry'
 
     if (tipoKey === 'exit' && regActual.entry && horaCorr <= regActual.entry)
-      return { reply: `⚠️ La salida (${fmt12(horaCorr)}) no puede ser antes o igual que la entrada (${fmt12(regActual.entry)}).` }
+      return nada(`⚠️ ${empC} — salida ${fmt12(horaCorr)} no puede ser antes de la entrada ${fmt12(regActual.entry)}`)
     if (tipoKey === 'entry' && regActual.exit && horaCorr >= regActual.exit)
-      return { reply: `⚠️ La entrada (${fmt12(horaCorr)}) no puede ser después o igual que la salida (${fmt12(regActual.exit)}).` }
+      return nada(`⚠️ ${empC} — entrada ${fmt12(horaCorr)} no puede ser después de la salida ${fmt12(regActual.exit)}`)
 
-    if (!week[empC]) week[empC] = {}
-    if (!week[empC][dkey]) week[empC][dkey] = {}
     week[empC][dkey][tipoKey] = horaCorr
-    await sSet(weekKey, week)
-    return { reply: `✏️ *${empC}* — ${tipoCorr === 'salida' ? 'SALIDA' : 'ENTRADA'} corregida a ${fmt12(horaCorr)}` }
+    const etiqueta = tipoCorr === 'salida' ? 'SALIDA' : 'ENTRADA'
+    return { changed: true,
+      line: `✏️ ${empC} — ${tipoCorr} → ${fmt12(horaCorr)}`,
+      detail: `✏️ *${empC}* — ${etiqueta} corregida a ${fmt12(horaCorr)}` }
   }
 
   // ── Registro normal: nombre [+ hora opcional] ──
@@ -213,32 +261,41 @@ async function procesarMensaje(texto) {
   if (m) { nombre = m[1].trim(); horaTxt = m[2].trim() }
 
   const { match: emp, ambiguous, options } = matchEmpleado(nombre, empleados)
-  if (ambiguous) return { reply: `🤔 Varios coinciden con "${nombre}":\n${options.join(', ')}\n\nEscribe el nombre completo.` }
-  if (!emp) return { reply: `❌ No encontré a "${nombre}" en la lista.\nEscribe \`lista\` para ver los empleados.` }
+  if (ambiguous) return nada(`🤔 "${nombre}" — varios: ${options.join(', ')}`,
+    `🤔 Varios coinciden con "${nombre}":\n${options.join(', ')}\n\nEscribe el nombre completo.`)
+  if (!emp) return nada(`❌ "${nombre}" — no está en la lista`,
+    `❌ No encontré a "${nombre}" en la lista.\nEscribe \`lista\` para ver los empleados.`)
 
   let hora
-  if (horaTxt) { hora = parseHora(horaTxt); if (!hora) return { reply: `⚠️ No entendí la hora "${horaTxt}".\nEjemplos: \`8:00 am\`, \`6 pm\`, \`18:30\`` } }
-  else { hora = horaActual }
+  if (horaTxt) {
+    hora = parseHora(horaTxt)
+    if (!hora) return nada(`⚠️ ${emp} — hora "${horaTxt}" no entendida`,
+      `⚠️ No entendí la hora "${horaTxt}".\nEjemplos: \`8:00 am\`, \`6 pm\`, \`18:30\``)
+  } else {
+    hora = horaComun || horaActual   // la hora compartida del prefijo manda sobre la actual
+  }
 
-  // Cargar semana, aplicar lógica POR ORDEN
-  const week = await sGet(weekKey) || {}
   if (!week[emp]) week[emp] = {}
   if (!week[emp][dkey]) week[emp][dkey] = {}
   const actual = week[emp][dkey]
 
   if (!actual.entry) {
     actual.entry = hora
-    await sSet(weekKey, week)
-    return { reply: `✅ *${emp}* — ENTRADA registrada\n🟢 ${fmt12(hora)}` }
-  } else if (!actual.exit) {
-    if (hora <= actual.entry)
-      return { reply: `⚠️ La salida (${fmt12(hora)}) no puede ser antes o igual que la entrada (${fmt12(actual.entry)}).\n\nSi la entrada está mal: \`corregir ${emp} ${fmt12(hora).replace(' ','')}\`` }
-    actual.exit = hora
-    await sSet(weekKey, week)
-    return { reply: `✅ *${emp}* — SALIDA registrada\n🟢 ${fmt12(actual.entry)} → 🔴 ${fmt12(hora)}` }
-  } else {
-    return { reply: `ℹ️ *${emp}* ya tiene entrada y salida hoy:\n🟢 ${fmt12(actual.entry)} → 🔴 ${fmt12(actual.exit)}\n\n_Para corregir:_\n• \`corregir ${emp}\`\n• \`corregir ${emp} salida 6pm\`` }
+    return { changed: true,
+      line: `🟢 ${emp} — entrada ${fmt12(hora)}`,
+      detail: `✅ *${emp}* — ENTRADA registrada\n🟢 ${fmt12(hora)}` }
   }
+  if (!actual.exit) {
+    if (hora <= actual.entry)
+      return nada(`⚠️ ${emp} — salida ${fmt12(hora)} no puede ser antes de la entrada ${fmt12(actual.entry)}`,
+        `⚠️ La salida (${fmt12(hora)}) no puede ser antes o igual que la entrada (${fmt12(actual.entry)}).\n\nSi la entrada está mal: \`corregir ${emp} ${fmt12(hora).replace(' ','')}\``)
+    actual.exit = hora
+    return { changed: true,
+      line: `🔴 ${emp} — salida ${fmt12(hora)}`,
+      detail: `✅ *${emp}* — SALIDA registrada\n🟢 ${fmt12(actual.entry)} → 🔴 ${fmt12(hora)}` }
+  }
+  return nada(`ℹ️ ${emp} — ya tenía entrada y salida`,
+    `ℹ️ *${emp}* ya tiene entrada y salida hoy:\n🟢 ${fmt12(actual.entry)} → 🔴 ${fmt12(actual.exit)}\n\n_Para corregir:_\n• \`corregir ${emp}\`\n• \`corregir ${emp} salida 6pm\``)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
